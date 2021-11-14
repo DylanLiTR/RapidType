@@ -6,11 +6,15 @@ import json
 import time
 from random import randrange
 import Levenshtein
+from collections import namedtuple
+
+user_node = namedtuple("user_node", "stats left right")
 
 client = discord.Client()
 
 ## Things to implement
-##    * styling the quote + cancel reaction
+##    * cancel reaction
+##    * save stats
 ##    * allow the user to add their own tests
 
 ## get quote from API
@@ -56,13 +60,20 @@ async def on_message(message):
     start = time.time()
 
     ## checks whether the user is the one who started the test
-    def check_response(msg):
-      return msg.channel == message.channel and msg.author == message.author
+    def check_response(m):
+      return m.channel == message.channel and m.author == message.author
 
     ## waits for the user's response and sends their typing test statistics
-    msg = await client.wait_for('message', check=check_response, timeout=180)
-    stat_list = calculate_stats(start, msg, content)
-    stats = stats_embed(stat_list, message.author)
+    response = await client.wait_for('message', check=check_response, timeout=180)
+
+    ## cancels the test if the user says >cancel
+    if response.content.startswith('>cancel'):
+      await message.channel.send("The test was cancelled.")
+      return 0
+    
+    ## sends the stats
+    stat_list = calculate_stats(start, response, content)
+    stats = results_embed(stat_list, message.author)
     await message.channel.send(embed=stats)
 
 ## creates a quote embed
@@ -77,7 +88,7 @@ def quote_embed(content, author, user):
   return embed
 
 ## creates a quote embed
-def stats_embed(stats, user):
+def results_embed(stats, user):
   embed = discord.Embed(
     title = "Stats",
     colour = 0xFFFFFF
