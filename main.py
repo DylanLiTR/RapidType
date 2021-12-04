@@ -3,18 +3,14 @@ import discord
 import os
 import requests
 import json
+import sqlite3
 import time
 from random import randrange
 import Levenshtein
-from collections import namedtuple
-
-user_node = namedtuple("user_node", "stats left right")
 
 client = discord.Client()
 
 ## Things to implement
-##    * cancel reaction
-##    * save stats
 ##    * allow the user to add their own tests
 
 ## get quote from API
@@ -32,16 +28,55 @@ def calculate_stats(start, msg, quote):
   word_count = len(words)
 
   duration = (end - start) / 60
+  accuracy = Levenshtein.ratio(quote, msg.content) * 100
+
+  raw_data = [char_count, word_count, accuracy, duration]
+  results = calculate(char_count, word_count, accuracy, duration)
+
+  if accuracy > 80:
+    update_stats(raw_data, msg.author)
+
+  return results
+
+## processes the raw data to create stats
+def calculate(char_count, word_count, accuracy, duration):
   cpm = char_count / duration
   sgwpm = cpm / 5
   wpm = word_count / duration
-  accuracy = Levenshtein.ratio(quote, msg.content) * 100
-  stats = [cpm, sgwpm, wpm, accuracy]
-  return stats
+
+  return [cpm, sgwpm, wpm, accuracy]
+
+## updates the stats of the user upon completing a typing test
+def update_stats(stats, tag):
+  ## accesses the database and selects the user's stats
+  db = sqlite3.connect('main.sqlite')
+  cursor = db.cursor()
+  cursor.execute("SELECT chars_typed, words_typed, accuracy, total_time, tests_completed FROM main WHERE tag = ?", (str(tag),))
+  result = cursor.fetchone()
+
+  ## updates the stats if the user is in the database, otherwise creating a new entry for the user
+  if result is None:
+    cursor.execute("INSERT INTO main(tag, chars_typed, words_typed, accuracy, total_time, tests_completed) VALUES (?, ?, ?, ?, ?, ?)", (str(tag), stats[0], stats[1], stats[2], stats[3], 1))
+  else:
+    cursor.execute("UPDATE main SET chars_typed = ?, words_typed = ?, accuracy = ?, total_time = ?, tests_completed = ? WHERE tag = ?", (result[0] + stats[0], result[1] + stats[1], (result[2] * result[4] + stats[2]) / (result[4] + 1), result[3] + stats[3], result[4] + 1, str(tag)))
+  db.commit()
+  cursor.close()
 
 ## print that the bot is ready in console
 @client.event
 async def on_ready():
+  db = sqlite3.connect('main.sqlite')
+  cursor = db.cursor()
+  cursor.execute('''
+    CREATE TABLE IF NOT EXISTS main(
+      tag TEXT,
+      chars_typed BIGINT,
+      words_typed BIGINT,
+      accuracy FLOAT,
+      total_time FLOAT,
+      tests_completed INT
+    )
+  ''')
   print('Logged in as {0.user}'.format(client))
 
 ## message events
@@ -53,8 +88,12 @@ async def on_message(message):
   if message.content.startswith('>quote'):
     ## retrieves and sends a quote
     raw_quote = get_quote()
-    content = raw_quote['text']
-    author = raw_quote['author']
+    while True:
+      content = raw_quote['text']
+      author = raw_quote['author']
+      if not (content is None or author is None):
+        break
+      raw_quote = get_quote()
     quote = quote_embed(content, author, message.author)
     await message.channel.send(embed=quote)
     start = time.time()
@@ -73,8 +112,24 @@ async def on_message(message):
     
     ## sends the stats
     stat_list = calculate_stats(start, response, content)
-    stats = results_embed(stat_list, message.author)
+    stats = results_embed(stat_list, message.author, "Results")
     await message.channel.send(embed=stats)
+
+  ## sends user stats
+  if message.content.startswith('>stats'):
+    ## accesses the database and finds the user's stats
+    db = sqlite3.connect('main.sqlite')
+    cursor = db.cursor()
+    cursor.execute("SELECT chars_typed, words_typed, accuracy, total_time FROM main WHERE tag = ?", (str(message.author),))
+    result = cursor.fetchone()
+
+    ## sends an embed of the user's stats or sends a message if the user is not in the database yet
+    if result is None:
+      await message.channel.send("No stats yet! Start a typing test using >quote.")
+    else:
+      stat_list = calculate(result[0], result[1], result[2], result[3])
+      stats = results_embed(stat_list, message.author, "Lifetime Stats")
+      await message.channel.send(embed=stats)
 
 ## creates a quote embed
 def quote_embed(content, author, user):
@@ -88,9 +143,9 @@ def quote_embed(content, author, user):
   return embed
 
 ## creates a quote embed
-def results_embed(stats, user):
+def results_embed(stats, user, title):
   embed = discord.Embed(
-    title = "Stats",
+    title = title,
     colour = 0xFFFFFF
   )
 
