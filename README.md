@@ -1,5 +1,6 @@
 # RapidType
 A simple Discord bot that tests typing speed using quotes from a database or ones added from a server.
+https://discord.com/api/oauth2/authorize?client_id=907077993342566461&permissions=1088&scope=bot
 
 ## Commands
 * \>help - tells the user the bot commands and how to use them
