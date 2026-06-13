@@ -1,0 +1,6 @@
+# Ignore local SQLite database states
+*.sqlite
+*.db
+
+# Ignore environment variables / Discord API Tokens
+.env

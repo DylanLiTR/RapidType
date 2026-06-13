@@ -10,6 +10,7 @@ import time
 from random import randrange
 import Levenshtein
 import asyncio
+import threading
 
 db = sqlite3.connect('main.sqlite')
 cursor = db.cursor()
@@ -40,12 +41,26 @@ client = commands.Bot(command_prefix=get_prefix,
                       intents=intents)
 
 
-## get quote from API
+# Check if we need to request more quotes from the API
+## Gets an offline quote instantly from our local database pool
 def get_quote():
-    response = requests.get("https://type.fit/api/quotes")
-    index = randrange(1643)
-    raw_quote = json.loads(response.text)[index]
-    return raw_quote
+    try:
+        # ORDER BY RANDOM() LIMIT 1 works incredibly fast for sets under 50,000 items
+        cursor.execute(
+            "SELECT quote, author FROM local_quote_pool ORDER BY RANDOM() LIMIT 1"
+        )
+        result = cursor.fetchone()
+
+        if result:
+            return {'text': result[0], 'author': result[1]}
+    except sqlite3.Error as e:
+        print(f"Database read error: {e}")
+
+    # Hardcoded safety net in case the user forgets to run the scraper first
+    return {
+        'text': "The dev forgot to fetch the quotes...",
+        'author': "RapidType"
+    }
 
 
 ## calculates CPM, WPM, and accuracy
@@ -77,11 +92,11 @@ def process_data(char_count, word_count, accuracy, duration):
 
 
 ## updates the stats of the user upon completing a typing test
-def update_stats(stats, tag):
+def update_stats(stats, user):
     ## accesses the database and selects the user's stats
     cursor.execute(
         "SELECT chars_typed, words_typed, accuracy, total_time, tests_completed FROM main WHERE tag = ?",
-        (str(tag), ))
+        (str(user.id), ))
     result = cursor.fetchone()
 
     ## updates the stats if the user is in the database, otherwise creating a new entry for the user
@@ -125,6 +140,7 @@ async def on_ready():
       author VARCHAR(64)
     )
     ''')
+    check_and_refill_cache()
     print('Logged in as {0.user}'.format(client))
 
 
@@ -166,17 +182,12 @@ async def typers(ctx):
     await ctx.channel.send("There are " + str(count[0]) + " typers!")
 
 
-## starts a typing test with a quote from our database
+## starts a typing test with a quote from our local storage pool
 @client.command()
 async def test(ctx):
-    ## formats the quote from the json database
     raw_quote = get_quote()
-    while True:
-        content = raw_quote['text']
-        author = raw_quote['author']
-        if not (content is None or author is None):
-            break
-        raw_quote = get_quote()
+    content = raw_quote['text']
+    author = raw_quote['author']
 
     await typing(ctx, content, author)
 
@@ -321,7 +332,7 @@ async def stats(ctx):
     ## accesses the database and finds the user's stats
     cursor.execute(
         "SELECT chars_typed, words_typed, accuracy, total_time FROM main WHERE tag = ?",
-        (str(ctx.author), ))
+        (str(ctx.author.id), ))
     result = cursor.fetchone()
 
     ## sends an embed of the user's stats or sends a message if the user is not in the database yet
@@ -398,6 +409,14 @@ def help_embed():
     embed.add_field(name="stats",
                     value="Shows your typing stats",
                     inline=False)
+    embed.add_field(name="reset",
+                    value="Deletes your typing stats",
+                    inline=False)
+    embed.add_field(
+        name="privacy",
+        value=
+        "Displays the link to our official Privacy Policy and data management rights",
+        inline=False)
     return embed
 
 
@@ -452,6 +471,60 @@ def results_embed(stats, user, title):
     embed.add_field(name="ㅤ", value="ㅤ", inline=True)
     embed.add_field(name="ㅤ", value="ㅤ", inline=True)
     return embed
+
+
+## completely deletes a user's typing history and statistics
+@client.command()
+async def reset(ctx):
+    # 1. Send a warning and ask for confirmation
+    confirm_msg = await ctx.send(
+        f"⚠️ **{ctx.author.mention}**, this will **permanently delete** all of your lifetime typing stats (WPM, CPM, accuracy history).\n"
+        f"This action cannot be undone. Type `confirm` within 30 seconds to proceed."
+    )
+
+    # 2. Verify that the response comes from the same user in the same channel
+    def check_confirm(m):
+        return m.author == ctx.author and m.channel == ctx.channel and m.content.lower(
+        ) == 'confirm'
+
+    try:
+        # Wait for the user to type 'confirm'
+        await client.wait_for('message', check=check_confirm, timeout=30.0)
+    except asyncio.TimeoutError:
+        # If they take too long, cancel the operation safely
+        await ctx.send("❌ Reset cancelled. Your stats are safe.")
+        return
+
+    # 3. If they confirmed, execute the SQL DELETE query using their unique User ID
+    try:
+        cursor.execute("DELETE FROM main WHERE tag = ?",
+                       (str(ctx.author.id), ))
+        db.commit()
+        await ctx.send(
+            "🧹 Success! Your data has been completely erased from our database. Your stats have been reset to zero."
+        )
+    except sqlite3.Error as e:
+        print(f"Database error during user data purge: {e}")
+        await ctx.send(
+            "⚠️ An internal error occurred while resetting your data. Please try again later."
+        )
+
+
+## sends a link to the bot's privacy policy
+@client.command()
+async def privacy(ctx):
+    embed = discord.Embed(
+        title="🔒 Privacy Policy & Data Rights",
+        description=
+        ("Your privacy is important to us. Click the link below to read our full data policy:\n\n"
+         "[👉 Read our Privacy Policy](https://github.com/DylanLiTR/RapidType/blob/main/privacy_policy.md)\n\n"
+         "**Key Details:**\n"
+         "• We only store your Discord ID to track typing stats (WPM/CPM/Accuracy).\n"
+         "• Your data is kept in a secure, private database layer.\n"
+         "• You can completely erase your data at any time by typing `>reset`."
+         ),
+        colour=0xFFFFFF)
+    await ctx.channel.send(embed=embed)
 
 
 ping()
