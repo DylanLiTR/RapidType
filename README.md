@@ -14,6 +14,7 @@ Invite this bot to your server!
 * \>delete - deletes the quote with the specified number (Ex. >delete 1)
 * \>quotes - lists all the quotes added from this server
 * \>stats - shows the user's typing stats
+* \>reset - deletes the user's data (stats)
 
 ## Potential Future Features
 * Tests as images to prevent copy-pasting
